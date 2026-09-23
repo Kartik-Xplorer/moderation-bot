@@ -1,7 +1,7 @@
 services:
   # Main bot service
   - type: web
-    name: alita-robot
+    name: masti-robot
     runtime: docker
     dockerfilePath: ./docker/alpine
     dockerContext: .
@@ -16,25 +16,26 @@ services:
         sync: false
       - key: DATABASE_URL
         fromDatabase:
-          name: alita-db
+          name: masti-db
           property: connectionString
-      - key: REDIS_ADDRESS
+      - key: REDIS_URL
         fromService:
           type: redis
-          name: alita-redis
-          property: hostport
+          name: masti-redis
+          property: connectionString
       - key: AUTO_MIGRATE
         value: "true"
       - key: HTTP_PORT
         value: "10000"
+
   # Redis service
   - type: redis
-    name: alita-redis
+    name: masti-redis
     plan: free
     maxmemoryPolicy: noeviction
     ipAllowList: [] # Allow all internal services
 
 databases:
-  - name: alita-db
+  - name: masti-db
     plan: free
-    databaseName: alita_robot
+    databaseName: masti_robot
