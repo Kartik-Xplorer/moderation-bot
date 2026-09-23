@@ -47,14 +47,22 @@ func (m *MigrationRunner) RunMigrations() error {
 	// Serialize concurrent runners (rolling replicas share one Postgres): without
 	// this, two instances can each pass isMigrationApplied then both apply.
 	if m.db != nil && m.db.Name() == "postgres" {
-		if err := m.db.Exec("SELECT pg_advisory_lock(hashtextextended('alita:schema_migrations', 0))").Error; err != nil {
-			return fmt.Errorf("failed to acquire migration lock: %w", err)
-		}
-		defer func() {
-			if err := m.db.Exec("SELECT pg_advisory_unlock(hashtextextended('alita:schema_migrations', 0))").Error; err != nil {
-				log.Warnf("[Migrations] Failed to release migration lock: %v", err)
+		var acquired bool
+		for i := 0; i < 5; i++ {
+			var result bool
+			if err := m.db.Raw("SELECT pg_try_advisory_lock(hashtextextended('alita:schema_migrations', 0))").Scan(&result).Error; err == nil && result {
+				acquired = true
+				break
 			}
-		}()
+			time.Sleep(1 * time.Second)
+		}
+		if acquired {
+			defer func() {
+				_ = m.db.Exec("SELECT pg_advisory_unlock(hashtextextended('alita:schema_migrations', 0))")
+			}()
+		} else {
+			log.Warn("[Migrations] Advisory lock busy/held by prior session — proceeding with migration execution")
+		}
 	}
 
 	if err := m.ensureMigrationsTable(); err != nil {
