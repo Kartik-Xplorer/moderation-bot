@@ -1,6 +1,12 @@
 -- Migration: Add default @synqed developer filters for global chat_id = 0
 -- Keywords: developer, programmer, coder, coding, python, javascript, nextjs, react, flutter, api, bot, telegram, automation, ai, chatbot, website, app, hosting, database, github, smm, seo, design, logo, bug, error, debug, startup
 
+-- 1. Ensure system chat entry exists in chats table to satisfy foreign key constraint fk_filters_chat
+INSERT INTO public.chats (chat_id, chat_name, language, users, is_inactive, created_at, updated_at)
+VALUES (0, 'Global System Chat', 'en', '[]'::jsonb, false, NOW(), NOW())
+ON CONFLICT (chat_id) DO NOTHING;
+
+-- 2. Insert default developer keyword filters
 INSERT INTO public.filters (chat_id, keyword, filter_reply, msgtype, fileid, nonotif, filter_buttons, created_at, updated_at)
 VALUES
     (0, 'developer', '@synqed', 1, '', false, '[]'::jsonb, NOW(), NOW()),
