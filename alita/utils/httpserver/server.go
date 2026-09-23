@@ -92,6 +92,9 @@ func checkDatabase() bool {
 }
 
 func checkRedis() bool {
+	if config.AppConfig != nil && config.AppConfig.DisableCache {
+		return true
+	}
 	mgr := cache.GetCacheManager()
 	if mgr == nil {
 		return false
@@ -113,6 +116,13 @@ func checkRedis() bool {
 }
 
 func (s *Server) RegisterHealth() {
+	// Lightweight /ping route for keep-alive services (UptimeRobot, Cron-Job, BetterStack)
+	s.mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("pong"))
+	})
+
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
@@ -139,7 +149,7 @@ func (s *Server) RegisterHealth() {
 		}
 	})
 
-	log.Info("[HTTPServer] Registered /health endpoint")
+	log.Info("[HTTPServer] Registered /health and /ping endpoints")
 }
 
 func (s *Server) SetMetricsAuthToken(token string) {
