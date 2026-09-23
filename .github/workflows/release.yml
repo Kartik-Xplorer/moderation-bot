@@ -1,0 +1,334 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release with v prefix (e.g., v2.19.4)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release-ci-checks:
+    name: Release CI Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      tested-sha: ${{ steps.tested.outputs.sha }}
+      tested-tree: ${{ steps.tested.outputs.tree }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: alita_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d alita_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      BOT_TOKEN: test-token
+      OWNER_ID: "1"
+      MESSAGE_DUMP: "1"
+      REDIS_ADDRESS: "localhost:6379"
+      DATABASE_URL: "postgres://postgres:postgres@localhost:5432/alita_test?sslmode=disable"
+      AUTO_MIGRATE: "false"
+      USE_WEBHOOKS: "false"
+      DEBUG: "false"
+      CGO_ENABLED: "1"
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prepare and record gated tree
+        id: tested
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            tag="v${INPUT_TAG#v}"
+            bash scripts/bump_version.sh "$tag"
+          fi
+          git add alita/config/config.go main.go
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git write-tree)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Run Gosec Security Scanner
+        uses: securego/gosec@v2.29.0
+        with:
+          args: -no-fail ./...
+
+      - name: Run vulnerability check
+        continue-on-error: true
+        uses: golang/govulncheck-action@v1
+
+      - name: Test release build
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o alita_robot .
+          if [ ! -f alita_robot ]; then
+            echo "Build failed"
+            exit 1
+          fi
+          echo "Build successful"
+
+      - name: Verify repository migration chain
+        env:
+          ALITA_TEST_MIGRATION_CHAIN: "true"
+        run: go test -tags testtools -v -count=1 -run '^TestRepositoryMigrationChain$' ./alita/db/migrations
+
+      - name: Run PostgreSQL integrity tests
+        env:
+          ALITA_TEST_DATABASE: "true"
+        run: make test-postgres-integrity
+
+      - name: Run full test suite
+        run: make test
+
+      - name: Check coverage threshold
+        run: |
+          coverage=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $3); print $3}')
+          if ! awk -v coverage="$coverage" 'BEGIN {exit !(coverage >= 78)}'; then
+            echo "Coverage ${coverage}% is below 78%"
+            exit 1
+          fi
+          echo "Coverage ${coverage}% meets 78%"
+
+      - name: Check translations
+        run: make check-translations
+
+      - name: Check generated docs drift
+        run: make check-docs
+
+  goreleaser:
+    name: Release with GoReleaser
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [release-ci-checks]
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-ci-checks.outputs.tested-sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Resolve release tag
+        id: tag
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            tag="v${INPUT_TAG#v}"
+          else
+            tag="$REF_NAME"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::tag '$tag' must be vMAJOR.MINOR.PATCH[-prerelease]" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: $tag"
+
+      - name: Bump bot version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          TESTED_SHA: ${{ needs.release-ci-checks.outputs.tested-sha }}
+          TESTED_TREE: ${{ needs.release-ci-checks.outputs.tested-tree }}
+        run: |
+          set -euo pipefail
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git fetch origin refs/heads/main:refs/remotes/origin/main
+          if [ "$(git rev-parse HEAD)" != "$TESTED_SHA" ] || [ "$(git rev-parse origin/main)" != "$TESTED_SHA" ]; then
+            echo "::error::main moved after release checks; rerun the release workflow" >&2
+            exit 1
+          fi
+          bash scripts/bump_version.sh "$TAG"
+          git add alita/config/config.go main.go
+          if [ "$(git write-tree)" != "$TESTED_TREE" ]; then
+            echo "::error::release tree differs from the tree that passed checks" >&2
+            exit 1
+          fi
+          if ! git diff --cached --quiet; then
+            git commit -am "chore(release): set BotVersion to ${TAG}"
+            if ! git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main; then
+              echo "::error::main advanced while publishing the tested release tree; rerun the workflow" >&2
+              exit 1
+            fi
+          else
+            echo "BotVersion already at ${TAG}; nothing to commit"
+          fi
+
+      - name: Create and push tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch origin refs/heads/main:refs/remotes/origin/main
+          if [ "$(git rev-parse origin/main)" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::main moved before tag creation; rerun the release workflow" >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+            if [ "$(git rev-list -n 1 "$TAG")" != "$(git rev-parse HEAD)" ]; then
+              echo "::error::tag $TAG already points to another commit" >&2
+              exit 1
+            fi
+            echo "Tag $TAG already points to this commit"
+          else
+            echo "Creating tag $TAG"
+            git tag -a "$TAG" -m "Release $TAG"
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$TAG"
+          fi
+
+      - name: Verify BotVersion matches tag
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ver="${TAG#v}"
+          if ! grep -qF "BotVersion:  \"${ver}\"" alita/config/config.go; then
+            echo "::error::BotVersion in alita/config/config.go != ${ver} — run 'make bump-version TAG=${TAG}', commit, and re-tag" >&2
+            exit 1
+          fi
+          if ! grep -qF "version = \"${TAG}\"" main.go; then
+            echo "::error::CLI version fallback in main.go != ${TAG} — run 'make bump-version TAG=${TAG}', commit, and re-tag" >&2
+            exit 1
+          fi
+          echo "BotVersion matches release tag ${TAG}"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Clean up existing release (handle tag moves)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if gh release view "$TAG" &>/dev/null 2>&1; then
+            echo "Existing release for $TAG found, deleting before recreate..."
+            gh release delete "$TAG" --yes
+          fi
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: v2.13.0
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-artifacts
+          path: dist/*
+          retention-days: 7
+
+  attest-artifacts:
+    name: Attest Release Artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [goreleaser]
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: release-artifacts
+          path: ./artifacts
+
+      - name: Attest artifacts
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "./artifacts/*"
+
+  post-release-scan:
+    name: Post-Release Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [goreleaser]
+    if: always() && needs.goreleaser.result == 'success'
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/divkix/alita_robot:latest
+          format: table
+          exit-code: 0
+          severity: CRITICAL,HIGH
+
+      - name: Release notification
+        run: |
+          echo "Release completed successfully!"
+          echo "Artifacts published to GitHub Releases"
+          echo "Docker images available at ghcr.io/divkix/alita_robot"

@@ -1,0 +1,45 @@
+# golangci-lint configuration for Alita Robot
+version: "2"
+
+run:
+  timeout: 5m
+  build-tags: ["testtools"]
+
+# Linters to enable
+linters:
+  enable:
+    - godox      # Detects TODO, FIXME, and other keywords
+    - dupl       # Detects duplicate code fragments
+    - gocyclo    # Cyclomatic complexity analysis
+  settings:
+    dupl:
+      threshold: 100
+    gocyclo:
+      # Minimal complexity to report.
+      # Threshold of 20 catches problematic functions while allowing reasonable complexity.
+      # CI reports all functions > 15 for visibility and gradual improvement.
+      min-complexity: 20
+  # Exclusions for complexity checks
+  exclusions:
+    rules:
+      # Exclude gocyclo and dupl for test files (table-driven tests often have high complexity/similar patterns)
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - dupl
+      # Exclude generated files
+      - path: scripts/generate_docs/
+        linters:
+          - gocyclo
+      # Exclude pre-existing complex migration logic (moved from alita/db/migrations.go)
+      - path: alita/db/migrations/
+        linters:
+          - gocyclo
+
+# Output settings
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  # Only fail on new issues - allows gradual improvement of existing codebase
+  # Remove this once existing complexity issues are addressed
+  new: true
