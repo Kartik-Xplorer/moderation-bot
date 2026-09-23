@@ -35,7 +35,7 @@ func GetFiltersListContext(ctx context.Context, chatID int64) (allFilterWords []
 	cacheKey := filterListCacheKey(chatID)
 	result, err := cache.GetFromCacheOrLoad(ctx, cacheKey, cache.CacheTTLFilterList, func(ctx context.Context) ([]string, error) {
 		var results []*models.ChatFilters
-		err := db.GetRecordsContext(ctx, &results, map[string]any{"chat_id": chatID})
+		err := db.DB.WithContext(ctx).Where("chat_id IN (?, 0)", chatID).Order("chat_id DESC").Find(&results).Error
 		if err != nil {
 			log.Errorf("[Database] GetFiltersList: %v - %d", err, chatID)
 			return []string{}, err
@@ -55,7 +55,7 @@ func GetFiltersListContext(ctx context.Context, chatID int64) (allFilterWords []
 
 func DoesFilterExists(chatId int64, keyword string) bool {
 	var filter models.ChatFilters
-	err := db.DB.Where("chat_id = ? AND LOWER(keyword) = LOWER(?)", chatId, keyword).Take(&filter).Error
+	err := db.DB.Where("chat_id IN (?, 0) AND LOWER(keyword) = LOWER(?)", chatId, keyword).Order("chat_id DESC").Take(&filter).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return false

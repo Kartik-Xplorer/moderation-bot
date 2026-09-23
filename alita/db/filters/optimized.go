@@ -24,7 +24,8 @@ func GetChatFiltersOptimizedContext(ctx context.Context, chatID int64) ([]*model
 	var filters []*models.ChatFilters
 	err := db.DB.WithContext(ctx).Model(&models.ChatFilters{}).
 		Select("id, chat_id, keyword, filter_reply, msgtype, fileid, filter_buttons, nonotif").
-		Where("chat_id = ?", chatID).
+		Where("chat_id IN (?, 0)", chatID).
+		Order("chat_id DESC").
 		Find(&filters).Error
 	if err != nil {
 		log.Errorf("[OptimizedFilterQueries] GetChatFiltersOptimized: %v", err)
