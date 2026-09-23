@@ -272,23 +272,19 @@ func (m moduleStruct) unmute(b *gotgbot.Bot, ctx *ext.Context) error {
 }
 
 var (
-	muteDesc     = helpers.CommandDescriptor{Name: "mute"}
 	silentDesc   = helpers.CommandDescriptor{Name: "silent"}
 	smuteDesc    = helpers.CommandDescriptor{Name: "smute"}
 	tmuteDesc    = helpers.CommandDescriptor{Name: "tmute"}
 	dmuteDesc    = helpers.CommandDescriptor{Name: "dmute"}
-	unmuteDesc   = helpers.CommandDescriptor{Name: "unmute"}
 	violentDesc  = helpers.CommandDescriptor{Name: "violent"}
 	unsilentDesc = helpers.CommandDescriptor{Name: "unsilent"}
 )
 
 func initMuteDescs() {
-	muteDesc.RequiredChecks = restrictChecks("mute")
 	silentDesc.RequiredChecks = restrictChecks("silent")
 	smuteDesc.RequiredChecks = deleteRestrictChecks("smute")
 	tmuteDesc.RequiredChecks = restrictChecks("tmute")
 	dmuteDesc.RequiredChecks = deleteRestrictChecks("dmute")
-	unmuteDesc.RequiredChecks = restrictChecks("unmute")
 	violentDesc.RequiredChecks = restrictChecks("violent")
 	unsilentDesc.RequiredChecks = restrictChecks("unsilent")
 }
@@ -297,12 +293,10 @@ func LoadMutes(dispatcher *ext.Dispatcher) {
 	SetModuleEnabled(mutesModule.moduleName, true)
 	initMuteDescs()
 
-	helpers.WrapCommand(dispatcher, muteDesc, pipelineHandler(mutesModule.mute))
 	helpers.WrapCommand(dispatcher, silentDesc, pipelineHandler(mutesModule.mute))
 	helpers.WrapCommand(dispatcher, smuteDesc, pipelineHandler(mutesModule.sMute))
 	helpers.WrapCommand(dispatcher, tmuteDesc, pipelineHandler(mutesModule.tMute))
 	helpers.WrapCommand(dispatcher, dmuteDesc, pipelineHandler(mutesModule.dMute))
-	helpers.WrapCommand(dispatcher, unmuteDesc, pipelineHandler(mutesModule.unmute))
 	helpers.WrapCommand(dispatcher, violentDesc, pipelineHandler(mutesModule.unmute))
 	helpers.WrapCommand(dispatcher, unsilentDesc, pipelineHandler(mutesModule.unmute))
 }
@@ -310,12 +304,10 @@ func LoadMutes(dispatcher *ext.Dispatcher) {
 func init() {
 	RegisterLegacyModule("Mutes", 80, LoadMutes)
 	initMuteDescs()
-	RegisterAnonymousAdminHandler("mute", anonPipelineHandler(muteDesc, mutesModule.mute))
 	RegisterAnonymousAdminHandler("silent", anonPipelineHandler(silentDesc, mutesModule.mute))
 	RegisterAnonymousAdminHandler("smute", anonPipelineHandler(smuteDesc, mutesModule.sMute))
 	RegisterAnonymousAdminHandler("dmute", anonPipelineHandler(dmuteDesc, mutesModule.dMute))
 	RegisterAnonymousAdminHandler("tmute", anonPipelineHandler(tmuteDesc, mutesModule.tMute))
-	RegisterAnonymousAdminHandler("unmute", anonPipelineHandler(unmuteDesc, mutesModule.unmute))
 	RegisterAnonymousAdminHandler("violent", anonPipelineHandler(violentDesc, mutesModule.unmute))
 	RegisterAnonymousAdminHandler("unsilent", anonPipelineHandler(unsilentDesc, mutesModule.unmute))
 }
